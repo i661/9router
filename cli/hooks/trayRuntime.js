@@ -111,15 +111,47 @@ function isArm64MachO(file) {
   }
 }
 
-// systray2 is constructed with copyDir:true, so what actually executes is
-// ~/.cache/node-systray/<version>/tray_darwin_release, and index.js only re-copies
-// when that path is absent. An overlaid binary stays invisible until this is cleared.
-// Scoped to our systray2 version: the parent dir is machine-global and shared
-// with any other node-systray consumer.
-function bustSystrayCopyCache() {
+// Where systray2 actually executes from, with copyDir:true: node-systray copies
+// the binary into ~/.cache/node-systray/<version>/ and index.js only re-copies
+// from the package dir when that path is absent.
+function systrayCopyCachePath() {
+  return path.join(os.homedir(), ".cache", "node-systray", SYSTRAY_VERSION, "tray_darwin_release");
+}
+
+// Write our binary into that copy cache. Seeding — rather than clearing it and
+// letting systray2 re-copy — is what makes the arm64 overlay survive a later
+// re-extract of the x86_64 package: npm never touches files outside node_modules.
+function seedSystrayCopyCache(srcBin, { silent = false } = {}) {
+  const dest = systrayCopyCachePath();
   try {
-    fs.rmSync(path.join(os.homedir(), ".cache", "node-systray", SYSTRAY_VERSION), { recursive: true, force: true });
-  } catch {}
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(srcBin, dest);
+    fs.chmodSync(dest, 0o755);
+    return true;
+  } catch (e) {
+    if (!silent) console.warn(`[9router][runtime] failed to seed tray copy cache: ${e.message}`);
+    return false;
+  }
+}
+
+// The runtime dir is installed into on demand (sqlite engine, tray), and npm
+// prunes anything not listed in that dir's package.json. systray2 is installed
+// with --no-save, so the next install removes it and re-extracts it from the
+// registry — restoring the x86_64 binary and silently discarding the arm64
+// overlay. Declaring the exact version keeps the package (and the overlay) in
+// place across reinstalls and reboots.
+function declareRuntimeDep(name, version) {
+  try {
+    const pkgPath = path.join(ensureRuntimeDir(), "package.json");
+    const manifest = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+    if (!manifest.dependencies) manifest.dependencies = {};
+    if (manifest.dependencies[name] === version) return;
+    manifest.dependencies[name] = version;
+    fs.writeFileSync(pkgPath, JSON.stringify(manifest, null, 2) + "\n");
+  } catch {
+    // Best-effort: without the declaration the overlay still works, it just has
+    // to be re-applied after every reinstall.
+  }
 }
 
 function arm64AttemptMarker() {
@@ -179,7 +211,32 @@ function ensureArm64TrayBin() {
 
   const binPath = path.join(getRuntimeNodeModules(), SYSTRAY_PKG, "traybin", "tray_darwin_release");
   if (!fs.existsSync(binPath)) return { skipped: true };
-  if (isArm64MachO(binPath)) return { native: true };
+  if (isArm64MachO(binPath)) {
+    // Nothing to download, but the two things an arm64 package binary still
+    // needs are cheap to re-assert: the runtime dep declaration that keeps the
+    // package across prunes, and the copy cache that systray2 actually executes
+    // from (a cleared ~/.cache would otherwise re-copy whatever sits in the
+    // package dir — x86_64 after a reinstall).
+    declareRuntimeDep(SYSTRAY_PKG, SYSTRAY_VERSION);
+    const cachePath = systrayCopyCachePath();
+    if (!isArm64MachO(cachePath)) seedSystrayCopyCache(binPath);
+    return { native: true };
+  }
+
+  // An x86_64 package binary with an arm64 cache copy means a reinstall replaced
+  // the overlay but the executed (cached) binary is still native — restore the
+  // package binary from the cache so the next cache miss cannot regress it.
+  const cachedArm64 = systrayCopyCachePath();
+  if (isArm64MachO(cachedArm64)) {
+    try {
+      fs.copyFileSync(cachedArm64, binPath);
+      fs.chmodSync(binPath, 0o755);
+      declareRuntimeDep(SYSTRAY_PKG, SYSTRAY_VERSION);
+      return { native: true, repaired: true };
+    } catch {
+      // fall through to the download path
+    }
+  }
   if (recentlyAttemptedArm64()) return { deferred: true };
 
   markArm64Attempt();
@@ -197,15 +254,23 @@ function ensureArm64TrayBin() {
     if (!isArm64MachO(tmp)) throw new Error("downloaded file is not an arm64 Mach-O");
     fs.chmodSync(tmp, 0o755);
     fs.renameSync(tmp, binPath);
-    bustSystrayCopyCache();
+    // Keep the package across the next runtime install so the overlay survives:
+    // npm prunes packages missing from runtime/package.json and re-extracts them.
+    declareRuntimeDep(SYSTRAY_PKG, SYSTRAY_VERSION);
+    seedSystrayCopyCache(binPath);
     clearArm64Attempt();
     console.log("✅ Native Apple Silicon tray installed");
     return { native: true, installed: true };
   } catch (e) {
     try { fs.rmSync(tmp, { force: true }); } catch {}
-    console.warn("⚠️  Native tray download failed — falling back to the Intel binary");
+    console.warn("⚠️  Native Apple Silicon tray binary unavailable — the Intel binary needs Rosetta 2");
     console.warn(`   Reason: ${e.message}`);
-    console.warn("   The Intel tray needs Rosetta 2: softwareupdate --install-rosetta --agree-to-license");
+    if (isArm64MachO(systrayCopyCachePath())) {
+      console.warn("   A previously cached native tray is still in use — no action needed.");
+    } else {
+      console.warn("   Fix: install Rosetta 2 →  softwareupdate --install-rosetta --agree-to-license");
+      console.warn("   (24h retry cooldown after a failure; the tray returns at the next successful run.)");
+    }
     return { native: false, error: e.message };
   }
 }
@@ -239,6 +304,10 @@ function ensureTrayRuntime({ silent = false } = {}) {
     ready = npmInstall([`${SYSTRAY_PKG}@${SYSTRAY_VERSION}`], { silent }) && hasSystray();
   }
   if (ready) {
+    // Declare it before anything else: the runtime dir is npm-installed into on
+    // every sqlite warm-up, and npm prunes packages absent from its manifest —
+    // which would delete systray2 (and any arm64 overlay) on the next boot.
+    declareRuntimeDep(SYSTRAY_PKG, SYSTRAY_VERSION);
     chmodSystrayBin({ silent });
     if (!silent) console.log("✅ System tray ready");
   }

@@ -21,7 +21,7 @@ BACKUP_DIR  := $(HOME)/.9router/backups
 LOG_FILE    := $(HOME)/.9router/logs/deploy-restart.log
 HEALTH_URL  := http://127.0.0.1:$(PORT)/api/auth/status
 
-.PHONY: deploy stage pack backup install restart health rollback prune-backups
+.PHONY: deploy stage pack backup install restart health rollback prune-backups tray-arm64
 
 deploy: pack backup install restart health
 	@echo "✅ Deployed and restarted on port $(PORT)"
@@ -93,3 +93,18 @@ rollback:
 
 prune-backups:
 	@ls -dt $(BACKUP_DIR)/9router-* 2>/dev/null | tail -n +6 | xargs rm -rf 2>/dev/null || true
+
+# Rebuild the native Apple Silicon tray binary and install it into both the
+# runtime package dir and the copy cache systray2 actually executes from.
+# Needed only when the pinned upstream release is missing (the hook's download
+# 404s) — on arm64 macOS this is what puts the menubar icon back without Rosetta.
+tray-arm64:
+	@test "$$(uname -s)" = "Darwin" || { echo "macOS only"; exit 1; }
+	@test "$$(uname -m)" = "arm64" || { echo "Apple Silicon only (uname -m = $$(uname -m))"; exit 1; }
+	@npm run build:tray-arm64 --prefix cli
+	@bin="$(CURDIR)/cli/.tray-build/tray_darwin_arm64"; \
+	rt="$(HOME)/.9router/runtime/node_modules/systray2/traybin/tray_darwin_release"; \
+	test -d "$(HOME)/.9router/runtime/node_modules/systray2" || { echo "ERROR: systray2 not installed in the runtime dir — start 9router once first"; exit 1; }; \
+	cp "$$bin" "$$rt" && chmod 755 "$$rt"; \
+	node -e "const h=require('$(INSTALL_DIR)/hooks/trayRuntime.js'); console.log('hook:', JSON.stringify(h.ensureArm64TrayBin()));"; \
+	echo "✅ Native arm64 tray installed into the runtime dir + copy cache — run 'make restart' for the icon"
