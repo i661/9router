@@ -531,6 +531,16 @@ export function createSSEStream(options = {}) {
         console.log("Error in flush:", error);
         finalizeStream();
       }
+    },
+    // Client teardown (downstream cancel / writable abort) must still run the
+    // usage/logging tail: a client closing right after the terminal SSE event
+    // (or aborting mid-stream) tears the pipeline down, and flush() never runs.
+    // finalizeStream() is idempotent via its `finalized` guard.
+    cancel() {
+      finalizeStream();
+    },
+    abort() {
+      finalizeStream();
     }
   });
 }
