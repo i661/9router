@@ -1,8 +1,12 @@
-import { getUsageStats, statsEmitter, getActiveRequests } from "@/lib/usageDb";
+import { getUsageStats, statsEmitter, getActiveRequests, VALID_PERIODS } from "@/lib/usageDb";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request) {
+  // Missing/invalid period falls back to "all" — no 400 here, EventSource would
+  // treat non-2xx as a connection error and retry-loop.
+  const rawPeriod = new URL(request.url).searchParams.get("period");
+  const period = VALID_PERIODS.has(rawPeriod) ? rawPeriod : "all";
   const encoder = new TextEncoder();
   const state = { closed: false, keepalive: null, send: null, sendPending: null, cachedStats: null };
 
@@ -19,7 +23,7 @@ export async function GET() {
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(quickStats)}\n\n`));
           }
           // Then do full recalc and update cache
-          const stats = await getUsageStats();
+          const stats = await getUsageStats(period);
           state.cachedStats = stats;
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(stats)}\n\n`));
         } catch {

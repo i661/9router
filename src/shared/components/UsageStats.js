@@ -265,39 +265,44 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       setFetching(true);
     }
 
+    // Guard: a slow response for a previously selected period must not land
+    // after the new period's data and freeze the now-live counters.
+    let cancelled = false;
+
     fetch(`/api/usage/stats?period=${period}`)
       .then((r) => r.ok ? r.json() : null)
       .then((data) => {
-        if (data) {
+        if (!cancelled && data) {
           hasLoadedStats.current = true;
           setStats((prev) => ({ ...prev, ...data }));
         }
       })
       .catch(() => {})
       .finally(() => {
-        setLoading(false);
-        setFetching(false);
+        if (!cancelled) {
+          setLoading(false);
+          setFetching(false);
+        }
       });
+
+    return () => { cancelled = true; };
   }, [period]);
 
-  // SSE connection - real-time updates for activeRequests + recentRequests only
+  // SSE connection — live full stats for the selected period. Each period gets
+  // its own EventSource (cleanup closes the old one on switch). UsageChart keeps
+  // its own /api/usage/chart?period= fetch — chart data is a separate source,
+  // not in the stats payload — and still updates on period change only.
   useEffect(() => {
-    const es = new EventSource("/api/usage/stream");
+    const es = new EventSource(`/api/usage/stream?period=${period}`);
 
     es.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data);
-        // Always merge only real-time fields, never overwrite full stats from REST
-        setStats((prev) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            activeRequests: data.activeRequests,
-            recentRequests: data.recentRequests,
-            errorProvider: data.errorProvider,
-            pending: data.pending,
-          };
-        });
+        // Payload is the complete getUsageStats result for the selected period —
+        // same key shape as the /api/usage/stats response — so one merge updates
+        // counters, breakdown tables, bar charts, and the real-time fields
+        // together. Messages missing a key leave prev's value for that key.
+        setStats((prev) => ({ ...prev, ...data }));
         if (hasLoadedStats.current) setLoading(false);
       } catch (err) {
         console.error("[SSE CLIENT] parse error:", err);
@@ -307,7 +312,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
     es.onerror = () => setLoading(false);
 
     return () => es.close();
-  }, []);
+  }, [period]);
 
   const toggleSort = useCallback((tableType, field) => {
     const params = new URLSearchParams(searchParams.toString());

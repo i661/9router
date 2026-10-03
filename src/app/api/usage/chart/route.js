@@ -1,7 +1,5 @@
 import { NextResponse } from "next/server";
-import { getChartData } from "@/lib/usageDb";
-
-const VALID_PERIODS = new Set(["today", "24h", "7d", "30d", "60d", "all"]);
+import { getChartData, VALID_PERIODS } from "@/lib/usageDb";
 
 export async function GET(request) {
   try {

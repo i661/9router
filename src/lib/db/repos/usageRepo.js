@@ -344,6 +344,8 @@ function loadDaysInRange(adapter, maxDays) {
   return adapter.all(`SELECT dateKey, data FROM usageDaily WHERE dateKey >= ? ORDER BY dateKey ASC`, [cutoffKey]);
 }
 
+export const VALID_PERIODS = new Set(["today", "24h", "7d", "30d", "60d", "all"]);
+
 export async function getUsageStats(period = "all") {
   const db = await getAdapter();
 
