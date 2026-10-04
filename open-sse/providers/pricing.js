@@ -485,9 +485,13 @@ export function calculateCostFromTokens(tokens, pricing) {
   }
 
   const outputTokens = tokens.completion_tokens || tokens.output_tokens || 0;
-  cost += outputTokens * (pricing.output / 1000000);
-
   const reasoningTokens = tokens.reasoning_tokens || 0;
+  // reasoning_tokens is a breakdown WITHIN completion_tokens (OpenAI/DeepSeek/MiMo
+  // convention; USAGE_EXTRACTORS.gemini and extractUsageFromResponse fold native
+  // additive thoughts into completion at capture). Billing both additively
+  // double-charges the reasoning slice.
+  const visibleOutput = Math.max(0, outputTokens - reasoningTokens);
+  cost += visibleOutput * (pricing.output / 1000000);
   if (reasoningTokens > 0) {
     cost += reasoningTokens * ((pricing.reasoning || pricing.output) / 1000000);
   }

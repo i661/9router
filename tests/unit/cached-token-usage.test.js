@@ -7,7 +7,7 @@ import { buildUsage, toOpenAIUsage } from "../../open-sse/translator/concerns/us
 //   prompt_tokens             = total input INCLUDING cache read + cache creation
 //   cached_tokens             = cache-read portion (subset of prompt_tokens)
 //   cache_creation_input_tokens = cache-write portion (subset of prompt_tokens)
-//   completion_tokens         = output
+//   completion_tokens         = output (INCLUDES reasoning_tokens as a breakdown)
 // Discriminator: Claude reports cache separately (prompt EXCLUDES cache);
 // OpenAI/Gemini report prompt INCLUDING cached_tokens.
 describe("canonicalizeUsage", () => {
@@ -129,6 +129,41 @@ describe("calculateCostFromTokens (canonical inclusive convention)", () => {
   it("matches plain input pricing when no cache present", () => {
     const cost = calculateCostFromTokens({ prompt_tokens: 100, completion_tokens: 50 }, pricing);
     expect(cost).toBeCloseTo((100 * 3 + 50 * 15) / 1_000_000, 12);
+  });
+
+  it("treats reasoning_tokens as a breakdown within completion, not an addition", () => {
+    // OpenAI/DeepSeek/MiMo report reasoning inside completion_tokens. Billing
+    // both additively double-charges the reasoning slice (it hit 2x output rate).
+    const withBreakdown = calculateCostFromTokens(
+      { prompt_tokens: 100, completion_tokens: 250, cached_tokens: 0, reasoning_tokens: 200 },
+      pricing
+    );
+    const withoutBreakdown = calculateCostFromTokens(
+      { prompt_tokens: 100, completion_tokens: 250, cached_tokens: 0 },
+      pricing
+    );
+    // Same work, with and without the breakdown → same cost when reasoning is
+    // billed at the output rate (every real vendor's convention).
+    expect(withBreakdown).toBeCloseTo(withoutBreakdown, 12);
+  });
+
+  it("prices the reasoning slice at a distinct reasoning rate when one exists", () => {
+    const cost = calculateCostFromTokens(
+      { prompt_tokens: 100, completion_tokens: 250, reasoning_tokens: 200 },
+      { ...pricing, reasoning: 30 }
+    );
+    // 50 visible at output rate + 200 reasoning at reasoning rate
+    const expected = (100 * 3 + 50 * 15 + 200 * 30) / 1_000_000;
+    expect(cost).toBeCloseTo(expected, 12);
+  });
+
+  it("clamps pathological reasoning > completion instead of crediting a refund", () => {
+    const cost = calculateCostFromTokens(
+      { prompt_tokens: 100, completion_tokens: 50, reasoning_tokens: 80 },
+      pricing
+    );
+    const expected = (100 * 3 + 80 * 15) / 1_000_000;
+    expect(cost).toBeCloseTo(expected, 12);
   });
 });
 

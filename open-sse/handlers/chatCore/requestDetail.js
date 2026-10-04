@@ -53,11 +53,16 @@ export function extractUsageFromResponse(responseBody) {
   // Gemini format. Antigravity / gemini-cli wrap the payload in { response: {...} }.
   const usageMetadata = responseBody.usageMetadata || responseBody.response?.usageMetadata;
   if (usageMetadata) {
+    const thoughts = usageMetadata.thoughtsTokenCount || 0;
     return {
       prompt_tokens: usageMetadata.promptTokenCount || 0,
-      completion_tokens: usageMetadata.candidatesTokenCount || 0,
+      // Gemini reports thoughts separately from candidates (additive); fold them
+      // into completion so the canonical "reasoning ⊂ completion" convention
+      // holds downstream (mirrors USAGE_EXTRACTORS.gemini). reasoning_tokens
+      // stays as the breakdown for stats.
+      completion_tokens: (usageMetadata.candidatesTokenCount || 0) + thoughts,
       cached_tokens: usageMetadata.cachedContentTokenCount || 0,
-      reasoning_tokens: usageMetadata.thoughtsTokenCount || 0
+      reasoning_tokens: thoughts
     };
   }
 
