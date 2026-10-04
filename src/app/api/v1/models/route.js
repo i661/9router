@@ -6,7 +6,7 @@ import {
   isAnthropicCompatibleProvider,
   isOpenAICompatibleProvider,
 } from "@/shared/constants/providers";
-import { getProviderConnections, getCombos, getCustomModels, getModelAliases } from "@/lib/localDb";
+import { getProviderConnections, getCombos, getCustomModels, getModelAliases, getPricingForModel } from "@/lib/localDb";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 import { resolveKimchiModels } from "open-sse/services/kimchiModels.js";
@@ -595,6 +595,22 @@ export async function buildModelsList(kindFilter, options = {}) {
           if (Number.isFinite(contextWindow)) model.context_length = contextWindow;
           if (Number.isFinite(maxOutput)) model.max_completion_tokens = maxOutput;
         }
+        // Per-token USD rates in the OpenRouter /models `pricing` shape, so clients
+        // (Hermes et al.) can compute cost straight from this listing. Resolved via
+        // the same lookup usage tracking bills with, so both surfaces agree.
+        // ponytail: pricing is advisory — skipped on error and for combos/static fallback list.
+        try {
+          const pricing = await getPricingForModel(providerId, modelId);
+          if (pricing) {
+            const rate = (v) => (typeof v === "number" && v >= 0 ? v / 1_000_000 : undefined);
+            model.pricing = {
+              prompt: rate(pricing.input),
+              completion: rate(pricing.output),
+              cache_read: rate(pricing.cached),
+              cache_write: rate(pricing.cache_creation),
+            };
+          }
+        } catch {}
         models.push(model);
       }
 
