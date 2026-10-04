@@ -291,12 +291,16 @@ export function extractUsage(chunk) {
   // Antigravity wraps usageMetadata inside response: { response: { usageMetadata: {...} } }
   const usageMeta = chunk.usageMetadata || chunk.response?.usageMetadata;
   if (usageMeta && typeof usageMeta === "object") {
+    const thoughts = usageMeta.thoughtsTokenCount;
     return normalizeUsage({
       prompt_tokens: usageMeta.promptTokenCount || 0,
-      completion_tokens: usageMeta.candidatesTokenCount || 0,
+      // Gemini reports thoughts additively to candidates; fold into completion
+      // so the canonical "reasoning ⊂ completion" convention holds (see
+      // canonicalizeUsage / USAGE_EXTRACTORS.gemini).
+      completion_tokens: (usageMeta.candidatesTokenCount || 0) + (thoughts || 0),
       total_tokens: usageMeta.totalTokenCount,
       cached_tokens: usageMeta.cachedContentTokenCount,
-      reasoning_tokens: usageMeta.thoughtsTokenCount
+      reasoning_tokens: thoughts
     });
   }
 

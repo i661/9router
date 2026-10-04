@@ -211,6 +211,20 @@ describe("Anthropic streaming usage (message_start carries cache, message_delta 
   });
 });
 
+describe("Gemini streaming usage (thoughts additive upstream, folded at capture)", () => {
+  it("folds thoughtsTokenCount into completion per the canonical convention", () => {
+    // Native Gemini: candidatesTokenCount EXCLUDES thoughtsTokenCount. Cost math
+    // treats reasoning as a subset of completion, so capture must fold or the
+    // reasoning slice is never billed.
+    const u = extractUsage({
+      usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 40, thoughtsTokenCount: 60, cachedContentTokenCount: 20 },
+    });
+    expect(u.completion_tokens).toBe(100); // 40 + 60
+    expect(u.reasoning_tokens).toBe(60);
+    expect(u.prompt_tokens).toBe(100);
+  });
+});
+
 describe("Kiro usage pass-through", () => {
   it("passes through plain input/output when no cache fields are present", () => {
     const out = toOpenAIUsage({ inputTokens: 100, outputTokens: 50 }, "kiro");

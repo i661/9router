@@ -103,13 +103,16 @@ export function openaiToAntigravityResponse(chunk, state) {
   // Usage metadata
   const usage = chunk.usage || state._usage;
   if (usage) {
+    const reasoning = usage.completion_tokens_details?.reasoning_tokens || 0;
     response.usageMetadata = {
       promptTokenCount: usage.prompt_tokens || 0,
-      candidatesTokenCount: usage.completion_tokens || 0,
+      // Native Gemini reports thoughts separately from candidates (additive);
+      // emit the visible slice so candidates + thoughts = completion exactly.
+      candidatesTokenCount: Math.max(0, (usage.completion_tokens || 0) - reasoning),
       totalTokenCount: usage.total_tokens || 0
     };
-    if (usage.completion_tokens_details?.reasoning_tokens) {
-      response.usageMetadata.thoughtsTokenCount = usage.completion_tokens_details.reasoning_tokens;
+    if (reasoning) {
+      response.usageMetadata.thoughtsTokenCount = reasoning;
     }
     if (usage.prompt_tokens_details?.cached_tokens) {
       response.usageMetadata.cachedContentTokenCount = usage.prompt_tokens_details.cached_tokens;
